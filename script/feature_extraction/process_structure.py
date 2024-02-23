@@ -1,9 +1,21 @@
+### checked!
 import numpy as np
 from Bio import pairwise2
 
 
+### checked!
 ########## Process PDB file ##########
 def get_pdb_xyz(pdb_file):
+    """ extract coordinate from .pdf text.
+    
+    backbone's(N, CA, C, O) xyz + R_group's centroid xyz.
+
+    Args:
+        pdb_file (list<string>): pdb text content.
+
+    Return:
+        X (np.ndarray): shape(AA_len, 5, 3)    
+    """
     current_pos = -1000
     X = []
     current_aa = {} # N, CA, C, O, R
@@ -30,8 +42,19 @@ def get_pdb_xyz(pdb_file):
     return np.array(X)
 
 
+### checked!
 ########## Get DSSP ##########
 def process_dssp(dssp_file):
+    """ extract Second-Structure(SS) and relative-solvent-accessibility(RSA) from .dssp file.
+
+    Args:
+        dssp_file (string)
+
+    Return:
+        seq (string): AA sequence in .dssp file.
+        dssp_feature (list<ndarray>): for each AA, use representation of (9,) array, 
+        first element represent RSA, rest 8 elements represent SS_type in one-hot.
+    """
     aa_type = "ACDEFGHIKLMNPQRSTVWY"
     SS_type = "HBEGITSC"
     rASA_std = [115, 135, 150, 190, 210, 75, 195, 175, 200, 170,
@@ -63,7 +86,18 @@ def process_dssp(dssp_file):
     return seq, dssp_feature
 
 
+### checked!
 def match_dssp(seq, dssp, ref_seq):
+    """ pad dssp with np.zeros(9) if seq have gap according to ref_seq.
+    
+    Args:
+        seq (string): dssp_seq.
+        dssp (list<ndarray>)
+        ref_seq: original sequence.
+
+    Return:
+        matched_dssp (list<ndarray>)
+    """
     alignments = pairwise2.align.globalxx(ref_seq, seq)
     ref_seq = alignments[0].seqA
     seq = alignments[0].seqB

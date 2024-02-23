@@ -1,3 +1,4 @@
+### checked!
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,7 +9,86 @@ import torch_geometric
 from torch_geometric.nn import radius_graph, TransformerConv
 
 
+##############  DataLoader  ##############
+### checked!
+class ProteinGraphDataset(data.Dataset):
+    """ build ProteinGraphDataset for ID_list in outpath.
+
+    e.g.
+    Data(edge_index=[2, 9445],  # edge exists if two AAs'Ca within raidus.
+         name='A0A009IHW8',     #
+         X=[269, 5, 3],         # coords of AAs.
+         node_feat=[269, 1033]) # feature of each AA(ProtTrans + DSSP)
+    
+    """
+    def __init__(self, ID_list, outpath, radius=15):
+        super(ProteinGraphDataset, self).__init__()
+        self.IDs = ID_list
+        self.path = outpath
+        self.radius = radius
+
+    def __len__(self): return len(self.IDs)
+
+    def __getitem__(self, idx): return self._featurize_graph(idx)
+
+    def _featurize_graph(self, idx):
+        name = self.IDs[idx]
+        with torch.no_grad():
+            X = torch.load(self.path + "pdb/" + name + ".pt")  # coord: shape(AA_len, 5, 3)
+            prottrans_feat = torch.load(self.path + "ProtTrans/" + name + ".pt")  # ProtTrans: shape(AA_len, 1024)
+            dssp_feat = torch.load(self.path + 'DSSP/' + name + ".pt")  # DSSP: shape(AA_len, 9)
+            pre_computed_node_feat = torch.cat([prottrans_feat, dssp_feat], dim=-1)  # ProtTrans+DSSP: shape(AA_len, 1024+9)
+
+            X_ca = X[:, 1]  # coord of C-alpha
+            edge_index = radius_graph(X_ca, r=self.radius, loop=True, max_num_neighbors = 1000, num_workers = 8)
+            # link two AAs if their distance less than self.radius.
+            # edge_index: shape(2, edge_num)
+
+        graph_data = torch_geometric.data.Data(name=name, X=X, node_feat=pre_computed_node_feat, edge_index=edge_index)
+        return graph_data
+    
+
 ##############  Model  ##############
+### checked!
+class EdgeMLP(nn.Module):
+    def __init__(self, num_hidden, dropout=0.2):
+        super(EdgeMLP, self).__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.BatchNorm1d(num_hidden)
+        self.W11 = nn.Linear(3*num_hidden, num_hidden, bias=True)
+        self.W12 = nn.Linear(num_hidden, num_hidden, bias=True)
+        self.act = torch.nn.GELU()
+
+    def forward(self, h_V, edge_index, h_E):
+        src_idx = edge_index[0]
+        dst_idx = edge_index[1]
+
+        h_EV = torch.cat([h_V[src_idx], h_E, h_V[dst_idx]], dim=-1)
+        h_message = self.W12(self.act(self.W11(h_EV)))
+        h_E = self.norm(h_E + self.dropout(h_message))
+        return h_E
+
+
+### checked!
+class Context(nn.Module):
+    def __init__(self, num_hidden):
+        super(Context, self).__init__()
+
+        self.V_MLP_g = nn.Sequential(
+                                nn.Linear(num_hidden,num_hidden),
+                                nn.ReLU(),
+                                nn.Linear(num_hidden,num_hidden),
+                                nn.Sigmoid()
+                                )
+
+    def forward(self, h_V, batch_id):
+        c_V = scatter_mean(h_V, batch_id, dim=0)
+        temp = c_V[batch_id]
+        h_V = h_V * self.V_MLP_g(c_V[batch_id])
+        return h_V
+
+
+### checked!
 class GNNLayer(nn.Module):
     def __init__(self, num_hidden, dropout=0.2, num_heads=4):
         super(GNNLayer, self).__init__()
@@ -41,42 +121,7 @@ class GNNLayer(nn.Module):
         return h_V, h_E
 
 
-class EdgeMLP(nn.Module):
-    def __init__(self, num_hidden, dropout=0.2):
-        super(EdgeMLP, self).__init__()
-        self.dropout = nn.Dropout(dropout)
-        self.norm = nn.BatchNorm1d(num_hidden)
-        self.W11 = nn.Linear(3*num_hidden, num_hidden, bias=True)
-        self.W12 = nn.Linear(num_hidden, num_hidden, bias=True)
-        self.act = torch.nn.GELU()
-
-    def forward(self, h_V, edge_index, h_E):
-        src_idx = edge_index[0]
-        dst_idx = edge_index[1]
-
-        h_EV = torch.cat([h_V[src_idx], h_E, h_V[dst_idx]], dim=-1)
-        h_message = self.W12(self.act(self.W11(h_EV)))
-        h_E = self.norm(h_E + self.dropout(h_message))
-        return h_E
-
-
-class Context(nn.Module):
-    def __init__(self, num_hidden):
-        super(Context, self).__init__()
-
-        self.V_MLP_g = nn.Sequential(
-                                nn.Linear(num_hidden,num_hidden),
-                                nn.ReLU(),
-                                nn.Linear(num_hidden,num_hidden),
-                                nn.Sigmoid()
-                                )
-
-    def forward(self, h_V, batch_id):
-        c_V = scatter_mean(h_V, batch_id, dim=0)
-        h_V = h_V * self.V_MLP_g(c_V[batch_id])
-        return h_V
-
-
+### checked!
 class Graph_encoder(nn.Module):
     def __init__(self, node_in_dim, edge_in_dim, hidden_dim, num_layers=4, drop_rate=0.2):
         super(Graph_encoder, self).__init__()
@@ -103,12 +148,12 @@ class Graph_encoder(nn.Module):
         return h_V
 
 
+### checked!
 class GPSite(nn.Module):
     def __init__(self, node_input_dim, edge_input_dim, hidden_dim, num_layers, augment_eps, dropout, task_list):
         super(GPSite, self).__init__()
         self.augment_eps = augment_eps
         self.Graph_encoder = Graph_encoder(node_in_dim=node_input_dim, edge_in_dim=edge_input_dim, hidden_dim=hidden_dim, num_layers=num_layers, drop_rate=dropout)
-
         self.task_list = task_list
         for task in self.task_list:
             self.add_module("FC_{}1".format(task), nn.Linear(hidden_dim, hidden_dim, bias=True))
@@ -140,35 +185,8 @@ class GPSite(nn.Module):
         return output
 
 
-##############  DataLoader  ##############
-class ProteinGraphDataset(data.Dataset):
-    def __init__(self, ID_list, outpath, radius=15):
-        super(ProteinGraphDataset, self).__init__()
-        self.IDs = ID_list
-        self.path = outpath
-        self.radius = radius
-
-    def __len__(self): return len(self.IDs)
-
-    def __getitem__(self, idx): return self._featurize_graph(idx)
-
-    def _featurize_graph(self, idx):
-        name = self.IDs[idx]
-        with torch.no_grad():
-            X = torch.load(self.path + "pdb/" + name + ".tensor")
-
-            prottrans_feat = torch.load(self.path + "ProtTrans/" + name + ".tensor")
-            dssp_feat = torch.load(self.path + 'DSSP/' + name + ".tensor")
-            pre_computed_node_feat = torch.cat([prottrans_feat, dssp_feat], dim=-1)
-
-            X_ca = X[:, 1]
-            edge_index = radius_graph(X_ca, r=self.radius, loop=True, max_num_neighbors = 1000, num_workers = 8)
-
-        graph_data = torch_geometric.data.Data(name=name, X=X, node_feat=pre_computed_node_feat, edge_index=edge_index)
-        return graph_data
-
-
 ##############  Geometric Featurizer  ##############
+### neglected!
 def get_geo_feat(X, edge_index):
     pos_embeddings = _positional_embeddings(edge_index)
     node_angles = _get_angle(X)

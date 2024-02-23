@@ -1,3 +1,4 @@
+### checked!
 import string, os
 import numpy as np
 
@@ -14,15 +15,35 @@ nn_config = {
 }
 
 
-# deal with IDs with different formats: e.g. "sp|P05067|A4_HUMAN Amyloid-beta precursor protein" (UniProt), "7PRW_1|Chains A, B|Glucocorticoid receptor|Homo sapiens" (PDB)
+### checked!
+# deal with IDs with different formats: e.g. 
+# "sp|P05067|A4_HUMAN Amyloid-beta precursor protein" (UniProt), 
+# "7PRW_1|Chains A, B|Glucocorticoid receptor|Homo sapiens" (PDB)
 def get_ID(name):
+    """ extract at most first two words in ID.
+
+    Args: 
+        name (string): fasta original ID line. e.g.
+        "sp|P05067|A4_HUMAN Amyloid-beta precursor protein"
+
+    Return:
+        ID (string): e.g. 'sp_P05067' 
+    """
     name = name.split("|")
     ID = "_".join(name[0:min(2, len(name))])
     ID = ID.replace(" ", "_")
     return ID
 
 
+### checked!
 def remove_non_standard_aa(seq):
+    """ delete non_standard AA in sequence.
+    Args:
+        seq (string)
+
+    Return: 
+        new_seq (string)
+    """
     standard_aa = "ACDEFGHIKLMNPQRSTVWY"
     new_seq = ""
     for aa in seq:
@@ -31,7 +52,19 @@ def remove_non_standard_aa(seq):
     return new_seq
 
 
+### checked!
 def process_fasta(fasta_file, outpath):
+    """ read in fasta file.
+    
+    Args: 
+        fasta_file (string)
+        outpath (string)
+    Return: 
+        -1 (int): if fasta_file invalid.
+        1 (int): if exceed MAX_INPUT_SEQ.
+        [ID_list, seq_list] (list): read_in IDs and seqs.
+            Besides, save a copy(test_seq.fa) to outoutpath.
+    """
     ID_list = []
     seq_list = []
 
@@ -60,42 +93,50 @@ def process_fasta(fasta_file, outpath):
         return -1
 
 
+### checked!
 def export_predictions(predictions, seq_list, outpath):
+    """"""
     # original order: ["PRO", "PEP", "DNA", "RNA", "ZN", "CA", "MG", "MN", "ATP", "HEME"]
     thresholds = [0.35, 0.47, 0.41, 0.46, 0.73, 0.57, 0.44, 0.65, 0.51, 0.61] # select by maximizing MCC on the cross validation
     index = [2, 3, 1, 0, 8, 9, 4, 5, 6, 7] # switch order to ["DNA", "RNA", "PEP", "PRO", "ATP", "HEME", "ZN", "CA", "MG", "MN"]
     GPSite_binding_scores = {}
 
+    # foreach protein
+    # generate separate txt
     for i, ID in enumerate(predictions):
         seq = seq_list[i]
         preds = predictions[ID]
-        norm_preds = []
-        binding_scores = [] # protein-level binding scores
+        norm_preds = []     # AA-level binding scores, shape of [10, seq_len].
+        binding_scores = [] # protein-level binding scores, shape of [10].
 
+        # foreach ligind(10)
         for lig_idx, pred in enumerate(preds):
+            # pred: ndarray of shape(seq_len)
             threshold = thresholds[lig_idx]
 
+            # normalization...
             norm_pred = []
             for score in pred:
                 if score > threshold:
-                    norm_score = (score - threshold) / (1 - threshold) * 0.5 + 0.5
+                    norm_score = (score - threshold) / (1 - threshold) * 0.5 + 0.5  # 0.5~1
                 else:
-                    norm_score = (score / threshold) * 0.5
+                    norm_score = (score / threshold) * 0.5  # 0~0.5
                 norm_pred.append(norm_score)
+                # norm_pred: list<int> length of seq_len
             norm_preds.append(norm_pred)
+            # norm_preds： [10, seq_len]
 
-            if lig_idx in [4, 5, 6, 7]: # metal ions
+            # for overview.txt, average over top-k num foreach ligand.
+            if lig_idx in [4, 5, 6, 7]: # metal ions: "ZN", "CA", "MG", "MN"
                 k = 5
             else:
                 k = 10
             k = min(k, len(seq))
-
-            idx = np.argpartition(norm_pred, -k)[-k:]
+            idx = np.argpartition(norm_pred, -k)[-k:]  # partition idx base on k-th minimum num, then select top-k num's idx.
             topk_norm_sores = np.array(norm_pred)[idx]
             binding_scores.append(topk_norm_sores.mean())
-
+            # shape of [10]
         GPSite_binding_scores[ID] = binding_scores
-
 
         pred_txt = "No.\tAA\tDNA_binding\tRNA_binding\tPeptide_binding\tProtein_binding\tATP_binding\tHEM_binding\tZN_binding\tCA_binding\tMG_binding\tMN_binding\n"
         for j in range(len(seq)):
@@ -104,12 +145,10 @@ def export_predictions(predictions, seq_list, outpath):
             for idx in index:
                 norm_score = norm_preds[idx][j]
                 pred_txt += "\t{:.3f}".format(norm_score)
-
             pred_txt += "\n"
 
         with open("{}/pred/{}.txt".format(outpath, ID), "w") as f:
             f.write(pred_txt)
-
 
         # export the predictions to a pdb file (for the visualization in the server)
         '''
@@ -142,10 +181,11 @@ def export_predictions(predictions, seq_list, outpath):
             f.write(new_pdb)
         '''
 
-
+    # generate overview.txt
     with open(outpath + "esmfold_pred.log", "r") as f:
         lines = f.readlines()
 
+    # get info from esmfold output, don't know what do these mean...
     info_dict = {}
     for line in lines:
         if "pLDDT" in line:
@@ -169,4 +209,4 @@ def export_predictions(predictions, seq_list, outpath):
     with open("{}/pred/overview.txt".format(outpath), "w") as f:
         f.write(entry_info)
 
-    os.system("rm {}/esmfold_pred.log".format(outpath))
+    # os.system("rm {}/esmfold_pred.log".format(outpath))

@@ -1,3 +1,4 @@
+### neglected! 
 import gc
 from tqdm import tqdm
 import torch
@@ -5,6 +6,18 @@ from transformers import T5Tokenizer, T5EncoderModel
 
 
 def get_ProtTrans(ID_list, seq_list, Min_protrans, Max_protrans, ProtTrans_path, outpath, gpu):
+    """ generate ProtTrans features.
+    
+    Args:
+        ID_list, seq_list (list)
+        Min_protrans, Max_protrans (tensor)
+        ProtTrans_path (string): path where store ProtTrans model.
+        outpath (string)
+        gpu (int)
+    
+    Return:
+        save ProtTrans features(tensor, shape of (seq_len, 1024)) into outpath.
+    """
     # Load the vocabulary and ProtT5-XL-UniRef50 Model
     tokenizer = T5Tokenizer.from_pretrained(ProtTrans_path, do_lower_case=False)
     model = T5EncoderModel.from_pretrained(ProtTrans_path)
@@ -35,4 +48,4 @@ def get_ProtTrans(ID_list, seq_list, Min_protrans, Max_protrans, ProtTrans_path,
             seq_len = (attention_mask[seq_num] == 1).sum()
             seq_emd = embedding[seq_num][:seq_len-1]
             seq_emd = (seq_emd - Min_protrans) / (Max_protrans - Min_protrans) # normalization
-            torch.save(seq_emd, outpath + "ProtTrans/" + batch_ID_list[seq_num] + '.tensor')
+            torch.save(seq_emd, outpath + "ProtTrans/" + batch_ID_list[seq_num] + '.pt')
