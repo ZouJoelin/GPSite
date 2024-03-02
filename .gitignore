@@ -5,5 +5,9 @@ __pycache__/
 
 tools/
 example/
+SOTA/
+train/
+!train/*.py
+!train/*.sh
 
 demo.*
