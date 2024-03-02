@@ -1,3 +1,4 @@
+### checked!
 import numpy as np
 import os, random, pickle
 import datetime
@@ -39,6 +40,7 @@ def Write_log(logFile, text, isPrint=True):
 
 
 def train_and_predict(model_class, config, args):
+    script_path = os.path.split(os.path.realpath(__file__))[0] + "/"
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     if not args.run_id:
@@ -72,20 +74,21 @@ def train_and_predict(model_class, config, args):
     else:
         task_list = [task]
 
-    # Training
+    # Train and Validate
     if args.train:
-        os.system(f'cp ./*.py {output_path}')
-        os.system(f'cp ./*.sh {output_path}')
+        os.system(f'cp {script_path}/*.py {output_path}')
+        os.system(f'cp {script_path}/*.sh {output_path}')
 
         log = open(output_path + 'train.log','w', buffering=1)
         Write_log(log, str(config) + '\n')
+        Write_log(log, "\n==================== Train ====================")
 
         CV_pred_dict = {} # 记录CV时每个蛋白的预测结果
         all_valid_metric = [] # 记录每一折的结果
 
         kf = KFold(n_splits = folds, shuffle=True, random_state=seed)
 
-        with open(args.dataset_path + task + "_train.pkl", "rb") as f:  # ???
+        with open(args.dataset_path + task + "_train.pkl", "rb") as f:
             train_data = pickle.load(f)
         for fold, (train_index, valid_index) in enumerate(kf.split(train_data)):
             Write_log(log, "\n========== Fold " + str(fold) + " ==========")
@@ -93,16 +96,21 @@ def train_and_predict(model_class, config, args):
             train_dataset = ProteinGraphDataset(train_data, train_index, args, task_list)
             sampler = RandomSampler(train_dataset, replacement=True, num_samples=num_samples)
             train_dataloader = DataLoader(train_dataset, batch_size = batch_size, sampler=sampler, shuffle=False, drop_last=True, num_workers=args.num_workers, prefetch_factor=2)
+            print(f"train_dataset: {train_dataset.__len__()}")  # total_data * (fold-1)/fold
+            print(f"train_dataloader: {train_dataloader.__len__()}")  # num_samples / batch_size
 
             valid_dataset = ProteinGraphDataset(train_data, valid_index, args, task_list)
             valid_dataloader = DataLoader(valid_dataset, batch_size = batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers, prefetch_factor=2)
-            
+            print(f"valid_dataset: {valid_dataset.__len__()}")  # total_data * 1/fold
+            print(f"valid_dataloader: {valid_dataloader.__len__()}")  # valid_dataset / batch_size
+
+
             model = model_class(node_input_dim, edge_input_dim, hidden_dim, layer, dropout, augment_eps, task_list).to(device)
 
             optimizer = torch.optim.Adam(model.parameters(), betas=(0.9, 0.99), lr=lr, weight_decay=1e-5, eps=1e-5)
             scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, steps_per_epoch=len(train_dataloader), epochs=epochs)  # ???
 
-            loss_tr = nn.BCEWithLogitsLoss(reduction='none')
+            loss_tr = nn.BCEWithLogitsLoss(reduction='none')  # reduction='none', which would keep original shape.
 
             if obj_max == 1:
                 best_valid_metric = 0
@@ -110,22 +118,26 @@ def train_and_predict(model_class, config, args):
                 best_valid_metric = 1e9
             not_improve_epochs = 0
 
-            for epoch in range(epochs):
+            for epoch in range(epochs):  # do both train & validate per epoch
+                # Train
+                model.train()
                 train_loss = 0
                 train_num = 0
-                model.train()
-
                 train_pred = []
                 train_y = []
+
                 bar = tqdm(train_dataloader)
                 for data in bar:
                     optimizer.zero_grad()
                     data = data.to(device)
 
                     outputs = model(data.X, data.node_feat, data.edge_index, data.seq, data.batch)
-
-                    loss = loss_tr(outputs, data.y) * data.y_mask  # each data entry may only contain parts of task in args.task
-                    loss = loss.sum() / data.y_mask.sum()  # ???
+                    # outputs.shape: (3685, 1)
+                    loss = loss_tr(outputs, data.y)
+                    # print(f"loss: {loss.shape}")
+                    loss = loss * data.y_mask  # each data entry may only contain parts of task in args.task
+                    # loss.shape: (3685, 1)
+                    loss = loss.sum() / data.y_mask.sum()
                     loss.backward()
                     optimizer.step()
                     scheduler.step()
@@ -143,16 +155,17 @@ def train_and_predict(model_class, config, args):
 
                     bar.set_description('loss: %.4f' % (loss.item()))
 
-                train_loss /= train_num
+                train_loss /= train_num  # average loss, metric(AUC, AUPR) over this epoch
                 train_pred = np.concatenate(train_pred)
                 train_y = np.concatenate(train_y)
                 train_metric = Metric(train_pred, train_y) # 一个epoch其实等于过了好几轮训练集
                 torch.cuda.empty_cache()
 
-                # Evaluate
+                # validate
                 model.eval()
                 valid_pred = [[] for task in task_list]
                 valid_y = [[] for task in task_list]
+
                 for data in tqdm(valid_dataloader):
                     data = data.to(device)
                     with torch.no_grad():
@@ -161,7 +174,7 @@ def train_and_predict(model_class, config, args):
                     for i in range(len(task_list)):
                         batch_valid_y = torch.masked_select(data.y[:,i], data.y_mask[:,i].bool())
                         batch_valid_pred = torch.masked_select(outputs[:,i], data.y_mask[:,i].bool())
-                        valid_y[i] += list(batch_valid_y.detach().cpu().numpy())
+                        valid_y[i] += list(batch_valid_y.detach().cpu().numpy())  # [1,2] + [3,4] -> [1,2,3,4], NOT [[1,2],[3,4]]
                         valid_pred[i] += list(batch_valid_pred.detach().cpu().numpy())
 
                 valid_metrics = []
@@ -173,14 +186,14 @@ def train_and_predict(model_class, config, args):
                 valid_auc = ",".join(list(valid_metrics[:,0].round(6).astype('str')))
                 valid_aupr = ",".join(list(valid_metrics[:,1].round(6).astype('str')))
 
-                if obj_max * (valid_metric[1]) > obj_max * best_valid_metric: # use AUPR
+                if obj_max * (valid_metric[1]) > obj_max * best_valid_metric: # challenge valid-AUPR: save best epoch's model for each fold.
                     torch.save(model.state_dict(), output_path + 'fold%s.ckpt'%fold)
                     not_improve_epochs = 0
                     best_valid_metric = valid_metric[1]
                     
                     Write_log(log,'[epoch %s] lr: %.6f, train_loss: %.6f, train_auc: %.6f, train_aupr: %.6f, valid_auc: %s, valid_aupr: %s'\
                     %(epoch,scheduler.get_last_lr()[0],train_loss,train_metric[0],train_metric[1],valid_auc,valid_aupr))
-                else:
+                else:  # early stop
                     not_improve_epochs += 1
                     Write_log(log,'[epoch %s] lr: %.6f, train_loss: %.6f, train_auc: %.6f, train_aupr: %.6f, valid_auc: %s, valid_aupr: %s, NIE +1 ---> %s'\
                     %(epoch,scheduler.get_last_lr()[0],train_loss,train_metric[0],train_metric[1],valid_auc,valid_aupr,not_improve_epochs))
@@ -213,7 +226,7 @@ def train_and_predict(model_class, config, args):
                 for i, ID in enumerate(IDs):
                     CV_pred_dict[ID] = []
                     for j in range(len(task_list)):
-                        CV_pred_dict[ID].append(list(outputs_split[i][:,j].detach().cpu().numpy()))
+                        CV_pred_dict[ID].append(list(outputs_split[i][:,j].detach().cpu().numpy()))  # [1,2].append([3,4]) -> [1,2,[3,4]]
 
             valid_metrics = []
             for i in range(len(task_list)):
@@ -230,7 +243,9 @@ def train_and_predict(model_class, config, args):
             all_valid_metric.append(valid_metrics[:,1]) # AUPR
 
         mean_valid_metric = np.mean(all_valid_metric, axis = 0) # 5折求平均
-        Write_log(log,'CV mean metric: %s, mean metric over tasks: %.6f'%(",".join([str(round(x, 6)) for x in mean_valid_metric]), np.mean(mean_valid_metric)))
+        Write_log(log, '\nCV mean metric: %s, mean metric over tasks: %.6f'%
+                    (",".join([str(round(x, 6)) for x in mean_valid_metric]), 
+                    np.mean(mean_valid_metric)))
 
         with open(output_path + "CV_pred_dict.pkl", "wb") as f:
             pickle.dump(CV_pred_dict, f)
@@ -239,7 +254,8 @@ def train_and_predict(model_class, config, args):
     if args.test:
         if not args.train:
             log = open(output_path + 'test.log', 'w', buffering=1)
-            Write_log(log,str(config)+'\n')
+            Write_log(log, str(config)+'\n')
+        Write_log(log, "\n==================== Test ====================")
 
         with open(args.dataset_path + task + "_test.pkl", "rb") as f:
             test_data = pickle.load(f)
@@ -260,7 +276,6 @@ def train_and_predict(model_class, config, args):
         test_y = [[] for task in task_list]
         for data in tqdm(test_dataloader):
             data = data.to(device)
-
             with torch.no_grad():
                 outputs = [model(data.X, data.node_feat, data.edge_index, data.seq, data.batch).sigmoid() for model in models]
                 outputs = torch.stack(outputs,0).mean(0) # 5个模型预测结果求平均
